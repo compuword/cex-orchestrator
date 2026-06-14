@@ -13,8 +13,10 @@ from typing import Dict, List, Optional, Tuple
 
 import numpy as np
 
-MAGIC        = b"CXNP"
-HEADER_SIZE  = 12
+MAGIC            = b"CXNP"
+HEADER_SIZE      = 12
+CXNP_MAGIC       = MAGIC        # alias used by gpu_server / npu_proxy
+CXNP_HEADER_SIZE = HEADER_SIZE  # alias used by gpu_server / backend_router
 
 # Inference ports
 DEFAULT_NPU_RX_PORT = 7474

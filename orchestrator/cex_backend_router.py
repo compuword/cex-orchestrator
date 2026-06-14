@@ -95,11 +95,20 @@ class BackendRouter:
         self._probe_interval = probe_interval
 
         # Static backends: [{"host": "x.x.x.x", "kind": "gpu"}, ...]
+        static_infos = []
         for b in (static_backends or []):
             kind = b.get("kind", "gpu")
             rx   = PORT_GPU_RX     if kind == "gpu" else PORT_NPU_RX
             hlt  = PORT_GPU_HEALTH if kind == "gpu" else PORT_NPU_HEALTH
-            self._backends.append(BackendInfo(b["host"], rx, hlt, kind))
+            bi   = BackendInfo(b["host"], rx, hlt, kind)
+            self._backends.append(bi)
+            static_infos.append(bi)
+
+        # Probe static backends immediately (don't wait for first probe_loop tick)
+        if static_infos:
+            import concurrent.futures
+            with concurrent.futures.ThreadPoolExecutor(max_workers=len(static_infos)) as pool:
+                pool.map(lambda bi: bi.probe(timeout=3.0), static_infos)
 
         # Background probe thread
         t = threading.Thread(target=self._probe_loop, daemon=True)
@@ -136,12 +145,17 @@ class BackendRouter:
                 found.extend(results)
 
         with self._lock:
-            existing_keys = {(b.host, b.kind) for b in self._backends}
+            existing = {(b.host, b.kind): b for b in self._backends}
+            to_probe = []
             for b in found:
-                if (b.host, b.kind) not in existing_keys:
+                key = (b.host, b.kind)
+                if key in existing:
+                    to_probe.append(existing[key])  # probe existing object
+                else:
                     self._backends.append(b)
+                    to_probe.append(b)
 
-        for b in found:
+        for b in to_probe:
             b.probe(timeout=timeout)
 
         log.info("Discovery complete. Found: %s", [str(b) for b in found])
