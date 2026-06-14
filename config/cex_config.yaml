@@ -1,0 +1,60 @@
+# CEX Inference Configuration
+# Default: ALL inference is LOCAL. Cloud is disabled unless explicitly enabled.
+
+inference:
+  # "local" = only local GPU/NPU/CPU. Never contact cloud.
+  # "cloud" = always use cloud (requires cloud.enabled: true)
+  # "auto"  = try local first, fall back to cloud if unavailable
+  backend: local
+  local_only: true      # hard gate -- overrides backend if true
+
+  # Local provider priority (tried in order)
+  preferred_local:
+    - dml     # DirectML: Windows RTX + AMD RX 6000+ (no CUDA install needed)
+    - cuda    # CUDA: Linux NVIDIA
+    - rocm    # ROCm: Linux AMD
+    - npu     # Qualcomm NPU (via cex-npu-linux server on LAN)
+    - cpu     # CPU fallback (always available)
+
+  # LAN backend discovery
+  lan_discovery: true
+  lan_subnet: "192.168.1.0/24"
+  npu_port: 7474
+  gpu_port: 7478
+
+# Cloud AI -- DISABLED by default. User must opt in explicitly.
+cloud:
+  enabled: false          # set true to allow cloud inference
+  provider: null          # openai | azure | anthropic | google | custom
+  api_key_env: null       # env var name that holds the API key
+  endpoint: null          # custom endpoint URL (optional)
+  model: null             # model name/ID
+  # cloud.enabled must be true AND inference.local_only must be false
+  # for any cloud call to proceed. Double gate.
+
+# Neural Graphics Primitives (instant-ngp / NeRF)
+# Requires: see requirements_rtx.txt (NVIDIA) or requirements_amd.txt (AMD)
+ngp:
+  enabled: false          # set true to activate NeRF/NGP capabilities
+  backend: auto           # auto | cuda-ngp | vulkan | torch-ngp | directml-ngp
+  memory_fraction: 0.90   # fraction of VRAM to allocate (0.0 - 1.0)
+  scene_scale: 1.0        # instant-ngp scene scale
+  n_steps: 35000          # training steps (instant-ngp default)
+  snapshot_dir: "./snapshots"
+
+# NVIDIA RTX specific
+nvidia:
+  cuda_device: 0
+  tcc_mode: false           # Tesla Compute Cluster -- disables display, more VRAM
+  allow_growth: true        # gradual VRAM allocation (vs pre-alloc all)
+  persistent_mode: false    # keep GPU initialized between runs
+  # NVIDIA driver minimum: 537.xx (CUDA 12.2) for instant-ngp
+  min_driver_version: "537.0"
+
+# AMD specific
+amd:
+  dml_device: 0
+  rocm_device: 0
+  vulkan_device: 0
+  # Adrenalin driver minimum: 23.7.1 (RX 6000 series, DirectML 1.13+)
+  min_driver_version: "23.7.1"

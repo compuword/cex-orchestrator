@@ -1,0 +1,57 @@
+# CEX Orchestrator -- NVIDIA RTX requirements
+# Covers: ONNX DirectML inference + instant-ngp (NeRF) capabilities
+#
+# Minimum GPU: RTX 2000 series (Turing, CUDA 7.5+)
+# Recommended: RTX 3080+ / RTX 4080+ (24GB VRAM for large NeRF scenes)
+# CUDA Toolkit: 12.2+ (https://developer.nvidia.com/cuda-downloads)
+# NVIDIA Driver: 537.xx+
+# Vulkan SDK: 1.3+ (https://vulkan.lunarg.com/)
+
+# --- Core inference (local ONNX, no cloud) ---
+numpy>=1.24.0
+onnx>=1.14.0
+onnxruntime-gpu>=1.17.0          # CUDA execution provider (RTX)
+pyyaml>=6.0
+
+# --- instant-ngp / NeRF dependencies ---
+# (instant-ngp itself must be built from source: https://github.com/NVlabs/instant-ngp)
+# pybind11 is included here for building the Python bindings
+commentjson>=0.9.0               # JSON with comments (instant-ngp configs)
+imageio>=2.31.0                  # image I/O for training data
+imageio-ffmpeg>=0.4.9            # video frame extraction
+opencv-python-headless>=4.8.0   # image processing, camera calibration
+pybind11>=2.11.0                 # Python/C++ bindings (for ngp Python module)
+pyquaternion>=0.9.9              # camera quaternion math (COLMAP -> ngp transforms)
+scipy>=1.11.0                    # scientific computing, image transforms
+tqdm>=4.66.0                     # progress bars during training
+
+# --- OpenEXR (HDR image format for NeRF training data) ---
+# Windows: use pre-built wheel
+# OpenEXR==1.3.2  -- install separately:
+#   pip install OpenEXR-1.3.2-cp39-cp39-win_amd64.whl  (Python 3.9)
+#   pip install OpenEXR-1.3.2-cp310-cp310-win_amd64.whl (Python 3.10)
+# Download: https://www.lfd.uci.edu/~gohlke/pythonlibs/#openexr
+# OR via: pip install openexr (Linux with libopenexr-dev installed)
+
+# --- COLMAP (Structure-from-Motion for camera poses) ---
+# Not a pip package -- install binary:
+#   Windows: https://github.com/colmap/colmap/releases
+#   or via conda: conda install -c conda-forge colmap
+# Python wrapper (optional):
+pycolmap>=0.6.0; platform_system != "Windows"  # Linux only via pip
+
+# --- Vulkan (compute shaders for instant-ngp renderer) ---
+# Vulkan SDK must be installed system-wide (not via pip)
+# Windows: https://vulkan.lunarg.com/sdk/home#windows
+# After install: set VK_SDK_PATH env var
+# Python Vulkan bindings (optional, for custom compute shaders):
+# vulkan>=1.3.0  -- install only if building custom Vulkan compute
+
+# --- NVIDIA GPU memory / monitoring ---
+nvidia-ml-py>=12.535.0           # pynvml -- GPU VRAM monitoring, driver info
+gputil>=1.4.0                    # GPU utilization tracking
+psutil>=5.9.0
+
+# --- Server/network ---
+fastapi>=0.110.0
+uvicorn[standard]>=0.29.0
