@@ -120,5 +120,5 @@ onnxruntime>=1.17.0           # CPU fallback only
 
 ## Related Projects
 
-- [cex-npu-linux](https://github.com/brunodanna/cex-npu-linux) -- Qualcomm ARM NPU server
-- [cex-npu-windows](https://github.com/brunodanna/cex-npu-windows) -- Windows NPU client + WDDM driver
+- [cex-npu-linux](https://github.com/compuword/cex-npu-linux) -- Qualcomm ARM NPU server
+- [cex-npu-windows](https://github.com/compuword/cex-npu-windows) -- Windows NPU client + WDDM driver
