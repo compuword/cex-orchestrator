@@ -1,0 +1,11 @@
+numpy>=1.24.0
+onnx>=1.14.0
+# Windows GPU (RTX + AMD RX 6000+):
+onnxruntime-directml>=1.17.0
+# Linux NVIDIA GPU:
+# onnxruntime-gpu>=1.17.0
+# Linux AMD GPU:
+# onnxruntime-rocm>=1.17.0
+# CPU-only fallback:
+# onnxruntime>=1.17.0
+psutil>=5.9.0
