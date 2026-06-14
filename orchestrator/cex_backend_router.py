@@ -1,34 +1,54 @@
 """
 cex_backend_router.py -- discovers and routes inference to best available backend.
 
-Backend priority (auto-detected via LAN scan + health check):
-  1. GPU server  (:7478) -- RTX / AMD RX 6000+ via DirectML
-  2. NPU server  (:7474) -- Qualcomm ARM via QNN
-  3. Local CPU   -- fallback via onnxruntime CPUExecutionProvider
+Two protocol paths coexist:
+
+  CXNP path (ONNX models -- classification, detection, embedding):
+    1. GPU server  (:7478) -- RTX / AMD RX 6000+ via CUDA / DirectML
+    2. NPU server  (:7474) -- Qualcomm ARM via QNN
+    3. Local CPU   -- fallback via onnxruntime CPUExecutionProvider
+
+  llama.cpp RPC path (GGUF / quantized LLMs):
+    1. LlamaRpcNode (:50052) -- any compute node (ARM NPU, spare GPU, CPU)
+    2. LlamaServer  (:8080)  -- local llama-server distributes layers to RPC nodes
+    3. Local llama  -- llama-server with no RPC (single machine)
 
 Usage:
-  # Option 1: built-in LAN scan
+  # ONNX inference (CXNP path)
   router = BackendRouter(subnet="192.168.1.0/24")
   router.discover()
-
-  # Option 2: read resource file (from cex-resource-discovery)
-  router = BackendRouter.from_resource_file(".cex/resources.json")
-
-  # Option 3: query discovery daemon API (cex-resource-discovery, port 7480)
-  router = BackendRouter.from_discovery_api("http://localhost:7480")
-
   outputs, lat, backend = router.infer(model_bytes, input_tensors)
+
+  # LLM inference (llama.cpp RPC path)
+  router.discover_rpc()                                   # scan port 50052
+  reply = router.infer_llm(
+      messages=[{"role": "user", "content": "Hello"}],
+      model_path="models/llama-3.1-8b-Q4_K_M.gguf",
+  )
+
+  # Alternative constructors (from cex-resource-discovery)
+  router = BackendRouter.from_resource_file(".cex/resources.json")
+  router = BackendRouter.from_discovery_api("http://localhost:7480")
 """
 
 import logging
 import pathlib
 import socket
 import struct
+import sys
 import threading
 import time
 import urllib.request
 import json
 from typing import Dict, List, Optional, Tuple
+
+# llama.cpp RPC integration (lazy import so ONNX path works without llama deps)
+def _import_llama():
+    shared = pathlib.Path(__file__).parent.parent / "gpu"
+    if str(shared) not in sys.path:
+        sys.path.insert(0, str(shared))
+    from cex_llama_rpc import RpcComputeNode, LlamaServerManager
+    return RpcComputeNode, LlamaServerManager
 
 import numpy as np
 
@@ -109,6 +129,10 @@ class BackendRouter:
             import concurrent.futures
             with concurrent.futures.ThreadPoolExecutor(max_workers=len(static_infos)) as pool:
                 pool.map(lambda bi: bi.probe(timeout=3.0), static_infos)
+
+        # llama.cpp RPC state (populated by discover_rpc)
+        self._rpc_nodes: list = []
+        self._llama_mgr: Optional[object] = None
 
         # Background probe thread
         t = threading.Thread(target=self._probe_loop, daemon=True)
@@ -359,19 +383,171 @@ class BackendRouter:
         t.start()
         return router
 
-    def status(self) -> List[dict]:
+    # ---------------------------------------------------------------
+    # llama.cpp RPC path
+    # ---------------------------------------------------------------
+
+    def discover_rpc(
+        self,
+        subnet: Optional[str] = None,
+        port: int = 50052,
+        timeout: float = 0.5,
+    ) -> list:
+        """
+        Scan subnet for llama-rpc-server nodes on port 50052.
+
+        Returns list of online RpcComputeNode objects.
+        Newly found nodes are added to the internal RPC pool.
+        """
+        RpcComputeNode, _ = _import_llama()
+        target = subnet or self._subnet or "192.168.1.0/24"
+        nodes  = RpcComputeNode.scan_lan(target, port=port, timeout=timeout)
+
         with self._lock:
-            return [
+            existing = {(n.host, n.port) for n in self._rpc_nodes}
+            for n in nodes:
+                if (n.host, n.port) not in existing:
+                    self._rpc_nodes.append(n)
+                    log.info("RPC node added: %s:%d", n.host, n.port)
+
+        return nodes
+
+    def add_rpc_node(self, host: str, port: int = 50052) -> bool:
+        """Add a static RPC compute node and probe it immediately."""
+        RpcComputeNode, _ = _import_llama()
+        n = RpcComputeNode(host, port)
+        ok = n.probe(timeout=3.0)
+        with self._lock:
+            existing = {(x.host, x.port) for x in self._rpc_nodes}
+            if (n.host, n.port) not in existing:
+                self._rpc_nodes.append(n)
+        return ok
+
+    def available_rpc_nodes(self) -> list:
+        """Return currently online RPC compute nodes."""
+        with self._lock:
+            return [n for n in self._rpc_nodes if n.available]
+
+    def infer_llm(
+        self,
+        messages: List[Dict],
+        model_path: str,
+        max_tokens: int = 512,
+        temperature: float = 0.7,
+        api_port: int = 8080,
+        n_gpu_layers: int = 99,
+        ctx_size: int = 4096,
+        **kwargs,
+    ) -> str:
+        """
+        Route LLM inference through llama-server with all available RPC backends.
+
+        - On first call: starts llama-server with --rpc pointing to all online
+          RpcComputeNode nodes discovered by discover_rpc().
+        - Subsequent calls reuse the running process.
+        - model_path: path to a GGUF file (e.g. models/llama-3.1-8b-Q4_K_M.gguf)
+        - Returns: assistant reply string (OpenAI chat completion format)
+
+        Example:
+          router.discover_rpc("192.168.1.0/24")
+          reply = router.infer_llm(
+              messages=[{"role": "user", "content": "Explain tensor parallelism"}],
+              model_path="models/llama-3.1-8b-Q4_K_M.gguf",
+          )
+        """
+        _, LlamaServerManager = _import_llama()
+
+        with self._lock:
+            mgr = self._llama_mgr
+            # Restart if model path changed
+            if mgr is not None and str(getattr(mgr, "model_path", "")) != str(model_path):
+                mgr.stop()
+                mgr = None
+
+        if mgr is None or not mgr.is_running():
+            mgr = LlamaServerManager(
+                model_path   = model_path,
+                api_port     = api_port,
+                n_gpu_layers = n_gpu_layers,
+                ctx_size     = ctx_size,
+            )
+            rpc_nodes = self.available_rpc_nodes()
+            log.info(
+                "Starting llama-server (model=%s, rpc_nodes=%d)",
+                model_path, len(rpc_nodes),
+            )
+            started = mgr.start(rpc_nodes=rpc_nodes)
+            if not started:
+                raise RuntimeError(
+                    "llama-server failed to start. "
+                    "Check that llama-server is installed and the model file exists. "
+                    "Install: .\\install\\install_llama_rpc_windows.ps1"
+                )
+            with self._lock:
+                self._llama_mgr = mgr
+
+        return mgr.chat(messages, max_tokens=max_tokens, temperature=temperature)
+
+    def stop_llama_server(self):
+        """Stop the managed llama-server process if running."""
+        with self._lock:
+            mgr = self._llama_mgr
+        if mgr is not None:
+            mgr.stop()
+            with self._lock:
+                self._llama_mgr = None
+
+    def llama_health(self) -> dict:
+        """Return llama-server health dict, or {'status': 'offline'}."""
+        with self._lock:
+            mgr = self._llama_mgr
+        if mgr is None:
+            return {"status": "offline", "reason": "not started"}
+        return mgr.health()
+
+    def status(self) -> List[dict]:
+        # CXNP backends (ONNX path)
+        with self._lock:
+            cxnp = [
                 {
-                    "kind":      b.kind,
-                    "host":      b.host,
-                    "rx_port":   b.rx_port,
-                    "available": b.available,
+                    "kind":       b.kind,
+                    "host":       b.host,
+                    "rx_port":    b.rx_port,
+                    "available":  b.available,
                     "latency_ms": round(b.latency_ms, 1),
-                    "provider":  b.caps.get("active_provider", "unknown"),
+                    "provider":   b.caps.get("active_provider", "unknown"),
+                    "protocol":   "CXNP/ONNX",
                 }
                 for b in self._backends
             ]
+            # llama.cpp RPC compute nodes
+            rpc = [
+                {
+                    "kind":       "llama_rpc",
+                    "host":       n.host,
+                    "rx_port":    n.port,
+                    "available":  n.available,
+                    "latency_ms": round(n.latency_ms, 1),
+                    "provider":   "llama.cpp RPC",
+                    "protocol":   "llama.cpp RPC",
+                }
+                for n in self._rpc_nodes
+            ]
+            mgr = self._llama_mgr
+        # llama-server process
+        llama_status = []
+        if mgr is not None:
+            h = mgr.health()
+            llama_status = [{
+                "kind":      "llama_server",
+                "host":      "localhost",
+                "rx_port":   getattr(mgr, "api_port", 8080),
+                "available": h.get("status") == "ok",
+                "latency_ms": 0.0,
+                "provider":  "llama.cpp server",
+                "protocol":  "OpenAI HTTP",
+            }]
+        return cxnp + rpc + llama_status
 
 
 def _recv_exact(s: socket.socket, n: int) -> bytes:

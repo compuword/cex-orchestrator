@@ -24,6 +24,7 @@ import subprocess
 import sys
 import threading
 import time
+import urllib.request
 
 # ---------------------------------------------------------------
 # Helpers
@@ -311,6 +312,93 @@ def test_inference(router):
     ok(f"Backend: {backend}  latency: {lat_ms:.1f} ms")
 
 # ---------------------------------------------------------------
+# Step 7: llama.cpp RPC layer
+# ---------------------------------------------------------------
+
+def test_llama_rpc(subnet=None):
+    step(7, "llama.cpp RPC layer")
+
+    # Import from gpu/ dir
+    gpu_dir = pathlib.Path(__file__).parent / "gpu"
+    sys.path.insert(0, str(gpu_dir))
+
+    try:
+        from cex_llama_rpc import LlamaServerManager, RpcComputeNode, get_capabilities
+    except ImportError as e:
+        warn(f"cex_llama_rpc import failed: {e}")
+        return
+
+    # 7a: binary detection
+    caps = get_capabilities()
+    if caps["server_installed"]:
+        ok(f"llama-server found: {caps['llama_server_bin']}")
+        if caps.get("version"):
+            info(f"Version: {caps['version']}")
+        if caps.get("backends"):
+            info(f"Backends: {', '.join(caps['backends'])}")
+    else:
+        warn("llama-server NOT installed")
+        warn("Install: .\\install\\install_llama_rpc_windows.ps1")
+
+    if caps["rpc_installed"]:
+        ok(f"llama-rpc-server found: {caps['llama_rpc_bin']}")
+    else:
+        warn("llama-rpc-server NOT installed (needed on compute nodes)")
+
+    # 7b: probe localhost:50052
+    local_rpc = RpcComputeNode("127.0.0.1", 50052)
+    if local_rpc.probe(timeout=1.0):
+        ok("llama-rpc-server running on localhost:50052")
+    else:
+        info("No llama-rpc-server on localhost:50052 (expected -- start on compute nodes)")
+        info("Start locally: llama-rpc-server --host 0.0.0.0 --port 50052")
+
+    # 7c: LAN scan for RPC nodes (if subnet provided)
+    if subnet:
+        info(f"Scanning for RPC nodes on {subnet} ...")
+        nodes = RpcComputeNode.scan_lan(subnet, timeout=0.5)
+        if nodes:
+            ok(f"RPC nodes found: {len(nodes)}")
+            for n in nodes:
+                ok(f"  {n}")
+        else:
+            warn(f"No RPC nodes found on {subnet}")
+    else:
+        info("Skipping LAN RPC scan (pass --subnet x.x.x.0/24 to enable)")
+
+    # 7d: llama-server health check on 8080 (if already running externally)
+    if port_open("localhost", 8080, timeout=0.5):
+        ok("llama-server already running on localhost:8080")
+        try:
+            with urllib.request.urlopen("http://localhost:8080/health", timeout=2) as r:
+                h = json.loads(r.read())
+                ok(f"Health: {h}")
+        except Exception as e:
+            warn(f"Health check failed: {e}")
+    else:
+        info("No llama-server on localhost:8080")
+        if caps["server_installed"]:
+            info("Start: llama-server --model models/llama-3.1-8b-Q4_K_M.gguf --port 8080")
+
+    # 7e: model file scan
+    models_dir = pathlib.Path(__file__).parent / "models"
+    if models_dir.exists():
+        gguf_files = list(models_dir.glob("*.gguf"))
+        if gguf_files:
+            ok(f"GGUF models found: {len(gguf_files)}")
+            for f in gguf_files[:3]:
+                size_gb = f.stat().st_size / 1e9
+                info(f"  {f.name} ({size_gb:.1f} GB)")
+        else:
+            warn("No .gguf models in models/ -- download one to test LLM inference")
+            info("Download: huggingface-cli download bartowski/Llama-3.1-8B-Instruct-GGUF")
+            info("          --include 'Llama-3.1-8B-Instruct-Q4_K_M.gguf' --local-dir models/")
+    else:
+        warn("models/ directory not found")
+        info("Create it and add a .gguf model file to test LLM inference")
+
+
+# ---------------------------------------------------------------
 # Main
 # ---------------------------------------------------------------
 
@@ -332,11 +420,16 @@ def main():
         test_discovery(subnet=args.subnet)
         router = test_router(server_ok)
         test_inference(router)
+        test_llama_rpc(subnet=args.subnet)
 
         print("\n" + "=" * 60)
         print("  [OK] All reachable tests passed.")
-        print("  Next: add ARM NPU servers to config/npu_connections.json")
-        print("        or run: python test_connection.py --subnet 192.168.x.0/24")
+        print("")
+        print("  ONNX path (CXNP):    GPU server on :7478, NPU on :7474")
+        print("  llama.cpp RPC path:  compute nodes on :50052, server on :8080")
+        print("")
+        print("  To test with ARM NPU server:")
+        print("    python test_connection.py --subnet 192.168.x.0/24")
         print("=" * 60)
 
     except SystemExit:
