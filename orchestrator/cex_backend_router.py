@@ -7,12 +7,21 @@ Backend priority (auto-detected via LAN scan + health check):
   3. Local CPU   -- fallback via onnxruntime CPUExecutionProvider
 
 Usage:
+  # Option 1: built-in LAN scan
   router = BackendRouter(subnet="192.168.1.0/24")
   router.discover()
+
+  # Option 2: read resource file (from cex-resource-discovery)
+  router = BackendRouter.from_resource_file(".cex/resources.json")
+
+  # Option 3: query discovery daemon API (cex-resource-discovery, port 7480)
+  router = BackendRouter.from_discovery_api("http://localhost:7480")
+
   outputs, lat, backend = router.infer(model_bytes, input_tensors)
 """
 
 import logging
+import pathlib
 import socket
 import struct
 import threading
@@ -233,6 +242,108 @@ class BackendRouter:
         lat  = (time.perf_counter() - t0) * 1000.0
         names = output_names or [o.name for o in sess.get_outputs()]
         return dict(zip(names, outs)), lat, "local:cpu"
+
+    # ---------------------------------------------------------------
+    # Alternative constructors (from cex-resource-discovery)
+    # ---------------------------------------------------------------
+
+    @classmethod
+    def from_resource_file(
+        cls,
+        path: str = ".cex/resources.json",
+        probe_interval: float = 30.0,
+    ) -> "BackendRouter":
+        """
+        Build a router from a .cex/resources.json file written by
+        cex-resource-discovery (python discovery/find_resources.py --scan).
+
+        The router skips the LAN scan and starts with the pre-built inventory.
+        Backends that were online at scan time are marked available immediately;
+        the background probe loop keeps them up to date.
+        """
+        p = pathlib.Path(path)
+        if not p.exists():
+            log.warning("Resource file not found: %s -- starting with empty router", path)
+            return cls(probe_interval=probe_interval)
+
+        data      = json.loads(p.read_text(encoding="utf-8"))
+        resources = data.get("resources", [])
+
+        router = cls.__new__(cls)
+        router._subnet         = ""
+        router._backends       = []
+        router._lock           = threading.Lock()
+        router._probe_interval = probe_interval
+
+        for r in resources:
+            kind = r.get("kind", "gpu")
+            if kind in ("local_gpu", "local_npu"):
+                continue  # local resources don't have TCP backends
+            b = BackendInfo(
+                host        = r["host"],
+                rx_port     = r.get("rx_port", PORT_GPU_RX if kind == "gpu" else PORT_NPU_RX),
+                health_port = r.get("health_port", PORT_GPU_HEALTH if kind == "gpu" else PORT_NPU_HEALTH),
+                kind        = kind,
+            )
+            b.available  = r.get("available", False)
+            b.latency_ms = r.get("latency_ms", 9999.0)
+            b.caps       = r.get("capabilities", {})
+            router._backends.append(b)
+
+        log.info("from_resource_file: loaded %d backends from %s", len(router._backends), path)
+        t = threading.Thread(target=router._probe_loop, daemon=True)
+        t.start()
+        return router
+
+    @classmethod
+    def from_discovery_api(
+        cls,
+        url: str = "http://localhost:7480",
+        probe_interval: float = 30.0,
+        timeout: float = 5.0,
+    ) -> "BackendRouter":
+        """
+        Build a router by querying the cex-resource-discovery daemon API.
+
+        The daemon must be running:
+          python discovery/find_resources.py --daemon --subnet 192.168.1.0/24
+
+        Falls back to an empty router if the API is unreachable.
+        """
+        try:
+            api_url = url.rstrip("/") + "/resources"
+            with urllib.request.urlopen(api_url, timeout=timeout) as resp:
+                data = json.loads(resp.read())
+            log.info("from_discovery_api: connected to %s", url)
+        except Exception as exc:
+            log.warning("from_discovery_api: unreachable (%s) -- starting empty", exc)
+            return cls(probe_interval=probe_interval)
+
+        router = cls.__new__(cls)
+        router._subnet         = ""
+        router._backends       = []
+        router._lock           = threading.Lock()
+        router._probe_interval = probe_interval
+
+        for r in data.get("resources", []):
+            kind = r.get("kind", "gpu")
+            if kind in ("local_gpu", "local_npu"):
+                continue
+            b = BackendInfo(
+                host        = r["host"],
+                rx_port     = r.get("rx_port", PORT_GPU_RX if kind == "gpu" else PORT_NPU_RX),
+                health_port = r.get("health_port", PORT_GPU_HEALTH if kind == "gpu" else PORT_NPU_HEALTH),
+                kind        = kind,
+            )
+            b.available  = r.get("available", False)
+            b.latency_ms = r.get("latency_ms", 9999.0)
+            b.caps       = r.get("capabilities", {})
+            router._backends.append(b)
+
+        log.info("from_discovery_api: loaded %d backends from %s", len(router._backends), url)
+        t = threading.Thread(target=router._probe_loop, daemon=True)
+        t.start()
+        return router
 
     def status(self) -> List[dict]:
         with self._lock:
