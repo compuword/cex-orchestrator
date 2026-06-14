@@ -62,14 +62,22 @@ _BIN_CANDIDATES = [
 ]
 
 _RPC_BIN_CANDIDATES = [
+    # canonical name (older builds)
     "llama-rpc-server",
     "llama-rpc-server.exe",
     r"C:\llama.cpp\build\bin\Release\llama-rpc-server.exe",
     r"C:\llama.cpp\build\Release\llama-rpc-server.exe",
+    # renamed in llama.cpp >= b4000 (target: rpc-server)
+    "rpc-server",
+    "rpc-server.exe",
+    r"C:\llama.cpp\build\bin\Release\rpc-server.exe",
+    r"C:\llama.cpp\build\Release\rpc-server.exe",
     "/usr/local/bin/llama-rpc-server",
     "/usr/bin/llama-rpc-server",
+    "/usr/local/bin/rpc-server",
     str(pathlib.Path.home() / "llama.cpp/build/bin/llama-rpc-server"),
     str(pathlib.Path.home() / "llama.cpp/build/llama-rpc-server"),
+    str(pathlib.Path.home() / "llama.cpp/build/bin/rpc-server"),
 ]
 
 
@@ -248,11 +256,11 @@ class LlamaServerManager:
                     [server_bin, "--list-backends"],
                     capture_output=True, text=True, timeout=5
                 )
-                raw = r.stdout + r.stderr
-                for line in raw.splitlines():
-                    line = line.strip()
-                    if line and not line.startswith("#"):
-                        caps["backends"].append(line)
+                if r.returncode == 0:
+                    for line in (r.stdout + r.stderr).splitlines():
+                        line = line.strip()
+                        if line and not line.startswith("#"):
+                            caps["backends"].append(line)
             except Exception:
                 pass
 

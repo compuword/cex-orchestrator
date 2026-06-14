@@ -103,7 +103,7 @@ if (-not $SkipBuild) {
 
     $cores = [Environment]::ProcessorCount
     & cmake --build $buildDir --config Release --parallel $cores `
-            --target llama-server llama-rpc-server
+            --target llama-server rpc-server
 
     if ($LASTEXITCODE -ne 0) { Write-Fail "Build failed"; exit 1 }
     Write-Ok "Build complete"
@@ -118,7 +118,8 @@ Write-Step "Verifying binaries"
 
 $binDir   = "$buildDir\bin\Release"
 $serverEx = "$binDir\llama-server.exe"
-$rpcEx    = "$binDir\llama-rpc-server.exe"
+# rpc-server was renamed from llama-rpc-server in llama.cpp >= b4000
+$rpcEx = if (Test-Path "$binDir\rpc-server.exe") { "$binDir\rpc-server.exe" } else { "$binDir\llama-rpc-server.exe" }
 
 if (Test-Path $serverEx) {
     Write-Ok "llama-server.exe: $serverEx"
@@ -128,9 +129,9 @@ if (Test-Path $serverEx) {
 }
 
 if (Test-Path $rpcEx) {
-    Write-Ok "llama-rpc-server.exe: $rpcEx"
+    Write-Ok "rpc-server.exe: $rpcEx"
 } else {
-    Write-Warn "llama-rpc-server.exe not found -- RPC offload disabled"
+    Write-Warn "rpc-server.exe not found -- RPC offload disabled"
 }
 
 # ---------------------------------------------------------------
@@ -170,7 +171,7 @@ Write-Host "  [OK] llama.cpp installed with CUDA + RPC" -ForegroundColor Green
 Write-Host "============================================================" -ForegroundColor Green
 Write-Host ""
 Write-Host "Run as RPC compute node (this machine):" -ForegroundColor White
-Write-Host "  llama-rpc-server --host 0.0.0.0 --port 50052" -ForegroundColor Yellow
+Write-Host "  rpc-server --host 0.0.0.0 --port 50052" -ForegroundColor Yellow
 Write-Host ""
 Write-Host "Run as inference server (with RPC backends):" -ForegroundColor White
 Write-Host "  llama-server --model models\llama-3.1-8b-Q4_K_M.gguf \`" -ForegroundColor Yellow
