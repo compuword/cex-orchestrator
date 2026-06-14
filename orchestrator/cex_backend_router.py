@@ -312,6 +312,8 @@ class BackendRouter:
         router._backends       = []
         router._lock           = threading.Lock()
         router._probe_interval = probe_interval
+        router._rpc_nodes      = []
+        router._llama_mgr      = None
 
         for r in resources:
             kind = r.get("kind", "gpu")
@@ -362,6 +364,8 @@ class BackendRouter:
         router._backends       = []
         router._lock           = threading.Lock()
         router._probe_interval = probe_interval
+        router._rpc_nodes      = []
+        router._llama_mgr      = None
 
         for r in data.get("resources", []):
             kind = r.get("kind", "gpu")
