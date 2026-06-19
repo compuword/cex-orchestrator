@@ -13,6 +13,14 @@ Usage:
   python cex_gpu_server.py [--rx-port 7478] [--health-port 7479]
 """
 
+import sys as _sys
+import pathlib as _pathlib
+_SHARED = _pathlib.Path(__file__).resolve().parent.parent / "shared"
+if str(_SHARED) not in _sys.path:
+    _sys.path.insert(0, str(_SHARED))
+del _SHARED, _pathlib, _sys
+
+
 import argparse
 import http.server
 import json

@@ -31,6 +31,14 @@ Usage:
   router = BackendRouter.from_discovery_api("http://localhost:7480")
 """
 
+import sys as _sys
+import pathlib as _pathlib
+_SHARED = _pathlib.Path(__file__).resolve().parent.parent / "shared"
+if str(_SHARED) not in _sys.path:
+    _sys.path.insert(0, str(_SHARED))
+del _SHARED, _pathlib, _sys
+
+
 import logging
 import pathlib
 import socket

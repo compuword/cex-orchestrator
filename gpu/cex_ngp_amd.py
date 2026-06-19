@@ -20,6 +20,14 @@ This module auto-detects which path is available and uses the best one.
 All paths are LOCAL ONLY -- no cloud inference. See config/cex_config.yaml.
 """
 
+import sys as _sys
+import pathlib as _pathlib
+_SHARED = _pathlib.Path(__file__).resolve().parent.parent / "shared"
+if str(_SHARED) not in _sys.path:
+    _sys.path.insert(0, str(_SHARED))
+del _SHARED, _pathlib, _sys
+
+
 import logging
 import os
 import platform
